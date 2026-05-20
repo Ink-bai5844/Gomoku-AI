@@ -1,0 +1,10 @@
+__pycache__
+.DS_Store
+wandb/
+.cursorignore
+output.txt
+*.pth
+*.pt
+*.pth.tar
+*.tar
+hg_token
