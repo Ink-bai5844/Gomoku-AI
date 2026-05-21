@@ -62,6 +62,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--visual-games-max", type=int, default=1)
     parser.add_argument("--student-eval-games", type=int, default=0, help="student self-play games after each iteration; observation only")
     parser.add_argument("--student-eval-mcts-sims", type=int, default=40, help="MCTS simulations for student observation games")
+    parser.add_argument(
+        "--translate-max-distance",
+        type=int,
+        default=2,
+        help="max row/col shift for translation augmentation; use -1 for unlimited",
+    )
+    parser.add_argument(
+        "--translate-min-edge-distance",
+        type=int,
+        default=2,
+        help="minimum distance between translated occupied bounding box and board edge",
+    )
     return parser.parse_args()
 
 
@@ -127,7 +139,15 @@ def teacher_game(
             value = 0.0
         else:
             value = 1.0 if record_player == winner else -1.0
-        examples.extend(augment_example(canonical, pi, value))
+        examples.extend(
+            augment_example(
+                canonical,
+                pi,
+                value,
+                translate_max_distance=None if args.translate_max_distance < 0 else args.translate_max_distance,
+                translate_min_edge_distance=args.translate_min_edge_distance,
+            )
+        )
     return examples
 
 
@@ -277,6 +297,8 @@ def main() -> None:
                 games=args.games,
                 mcts_sims=args.mcts_sims,
                 learn_after_step=learn_after_step,
+                translate_max_distance=args.translate_max_distance,
+                translate_min_edge_distance=args.translate_min_edge_distance,
             )
 
         eval_results: list[tuple[int, int]] = []

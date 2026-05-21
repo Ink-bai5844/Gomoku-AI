@@ -44,6 +44,10 @@ class NeuralTrainConfig:
     reward_weight: float = 0.0
     learn_after_step: int | None = None
     learn_opponent_wins: bool = True
+    translate_max_distance: int | None = 2
+    translate_min_edge_distance: int = 2
+    first_move_center_size: int | None = None
+    opponent_first_move_center_size: int | None = None
     seed: int = 7
     model_path: Path = Path("models/gomoku_resnet.pth.tar")
     opponent_checkpoint: Path | None = None
@@ -55,7 +59,38 @@ def canonical_array(board: Board, player: int) -> np.ndarray:
     return (np.array(board.grid, dtype=np.int8) * player).astype(np.float32)
 
 
-def augment_example(board: np.ndarray, pi: np.ndarray, value: float) -> list[tuple[np.ndarray, np.ndarray, float]]:
+def augment_example(
+    board: np.ndarray,
+    pi: np.ndarray,
+    value: float,
+    *,
+    translate_max_distance: int | None = 2,
+    translate_min_edge_distance: int = 2,
+) -> list[tuple[np.ndarray, np.ndarray, float]]:
+    translated = (
+        _translation_augments(
+            board,
+            pi,
+            value,
+            max_distance=translate_max_distance,
+            min_edge_distance=translate_min_edge_distance,
+        )
+        if value != 0.0
+        else [(board, pi, value)]
+    )
+    examples: list[tuple[np.ndarray, np.ndarray, float]] = []
+    seen: set[bytes] = set()
+    for trans_board, trans_pi, trans_value in translated:
+        for aug_board, aug_pi, aug_value in _symmetry_augments(trans_board, trans_pi, trans_value):
+            key = aug_board.astype(np.int8).tobytes() + np.round(aug_pi, 8).tobytes()
+            if key in seen:
+                continue
+            seen.add(key)
+            examples.append((aug_board, aug_pi, aug_value))
+    return examples
+
+
+def _symmetry_augments(board: np.ndarray, pi: np.ndarray, value: float) -> list[tuple[np.ndarray, np.ndarray, float]]:
     size = board.shape[0]
     pi_board = pi.reshape(size, size)
     examples: list[tuple[np.ndarray, np.ndarray, float]] = []
@@ -65,6 +100,71 @@ def augment_example(board: np.ndarray, pi: np.ndarray, value: float) -> list[tup
         examples.append((b.copy(), p.reshape(-1).copy(), value))
         examples.append((np.fliplr(b).copy(), np.fliplr(p).reshape(-1).copy(), value))
     return examples
+
+
+def _translation_augments(
+    board: np.ndarray,
+    pi: np.ndarray,
+    value: float,
+    *,
+    max_distance: int | None,
+    min_edge_distance: int,
+) -> list[tuple[np.ndarray, np.ndarray, float]]:
+    size = board.shape[0]
+    min_edge_distance = max(0, int(min_edge_distance))
+    if max_distance is not None and max_distance < 0:
+        max_distance = None
+    occupied = np.argwhere(board != 0)
+    if occupied.size == 0:
+        return [(board, pi, value)]
+
+    min_row, min_col = occupied.min(axis=0)
+    max_row, max_col = occupied.max(axis=0)
+    height = int(max_row - min_row + 1)
+    width = int(max_col - min_col + 1)
+
+    pi_board = pi.reshape(size, size)
+    pi_support = np.argwhere(pi_board > 1e-12)
+    if pi_support.size == 0:
+        return [(board, pi, value)]
+
+    translations: list[tuple[np.ndarray, np.ndarray, float]] = []
+    top_min = min_edge_distance
+    left_min = min_edge_distance
+    top_max = size - height - min_edge_distance
+    left_max = size - width - min_edge_distance
+    if top_min > top_max or left_min > left_max:
+        return [(board, pi, value)]
+
+    for new_top in range(top_min, top_max + 1):
+        for new_left in range(left_min, left_max + 1):
+            dr = int(new_top - min_row)
+            dc = int(new_left - min_col)
+            if max_distance is not None and (abs(dr) > max_distance or abs(dc) > max_distance):
+                continue
+            shifted_support = pi_support + np.array([dr, dc])
+            if (
+                shifted_support[:, 0].min() < 0
+                or shifted_support[:, 0].max() >= size
+                or shifted_support[:, 1].min() < 0
+                or shifted_support[:, 1].max() >= size
+            ):
+                continue
+
+            shifted_board = np.zeros_like(board)
+            shifted_pi = np.zeros_like(pi_board, dtype=np.float32)
+
+            shifted_occupied = occupied + np.array([dr, dc])
+            shifted_board[shifted_occupied[:, 0], shifted_occupied[:, 1]] = board[occupied[:, 0], occupied[:, 1]]
+            shifted_pi[shifted_support[:, 0], shifted_support[:, 1]] = pi_board[pi_support[:, 0], pi_support[:, 1]]
+
+            pi_sum = float(shifted_pi.sum())
+            if pi_sum <= 0:
+                continue
+            shifted_pi /= pi_sum
+            translations.append((shifted_board.copy(), shifted_pi.reshape(-1).copy(), value))
+
+    return translations or [(board, pi, value)]
 
 
 def shaped_reward(board: Board, move: tuple[int, int], player: int) -> float:
@@ -106,6 +206,56 @@ def sample_action(probs: np.ndarray, rng: random.Random) -> int:
     return int(np.argmax(probs))
 
 
+def restrict_first_move_to_center(probs: np.ndarray, board_size: int, center_size: int | None) -> np.ndarray:
+    if center_size is None or center_size <= 0:
+        return probs
+    if center_size % 2 == 0:
+        raise ValueError("--first-move-center-size must be an odd number")
+    if center_size > board_size:
+        raise ValueError("--first-move-center-size cannot exceed board size")
+
+    center = board_size // 2
+    radius = center_size // 2
+    mask = np.zeros((board_size, board_size), dtype=np.float32)
+    mask[center - radius : center + radius + 1, center - radius : center + radius + 1] = 1.0
+    masked = probs.reshape(board_size, board_size) * mask
+    total = float(masked.sum())
+    if total <= 0:
+        masked = mask / float(mask.sum())
+    else:
+        masked = masked / total
+    return masked.reshape(-1)
+
+
+def random_center_first_move(
+    board: Board,
+    rng: random.Random,
+    center_size: int | None,
+    option_name: str,
+) -> tuple[int, np.ndarray] | None:
+    if center_size is None or center_size <= 0:
+        return None
+    if center_size % 2 == 0:
+        raise ValueError(f"{option_name} must be an odd number")
+    if center_size > board.size:
+        raise ValueError(f"{option_name} cannot exceed board size")
+
+    center = board.size // 2
+    radius = center_size // 2
+    actions: list[int] = []
+    for row in range(center - radius, center + radius + 1):
+        for col in range(center - radius, center + radius + 1):
+            if board.grid[row][col] == 0:
+                actions.append(row * board.size + col)
+    if not actions:
+        return None
+
+    action = rng.choice(actions)
+    pi = np.zeros(board.size * board.size, dtype=np.float32)
+    pi[action] = 1.0
+    return action, pi
+
+
 def play_training_game(
     learner: NeuralPolicy,
     config: NeuralTrainConfig,
@@ -134,6 +284,8 @@ def play_training_game(
         if is_learner_turn:
             temp = 1.0 if use_temperature and step <= config.temp_threshold else 0.0
             pi = learner_mcts.action_probs(board, player, temp=temp)
+            if opponent_policy is not None and learner_player == BLACK and board.move_count == 0:
+                pi = restrict_first_move_to_center(pi, board.size, config.first_move_center_size)
             action = sample_action(pi, rng) if temp > 0 else int(np.argmax(pi))
             move = divmod(action, board.size)
             reward = shaped_reward(board, move, player) if config.reward_weight > 0 else 0.0
@@ -141,8 +293,19 @@ def play_training_game(
         else:
             assert opponent_mcts is not None
             temp = 1.0 if use_temperature and step <= config.temp_threshold else 0.0
-            pi = opponent_mcts.action_probs(board, player, temp=temp)
-            action = sample_action(pi, rng) if temp > 0 else int(np.argmax(pi))
+            forced_first_move = None
+            if player == BLACK and learner_player != BLACK and board.move_count == 0:
+                forced_first_move = random_center_first_move(
+                    board,
+                    rng,
+                    config.opponent_first_move_center_size,
+                    "--opponent-first-move-center-size",
+                )
+            if forced_first_move is None:
+                pi = opponent_mcts.action_probs(board, player, temp=temp)
+                action = sample_action(pi, rng) if temp > 0 else int(np.argmax(pi))
+            else:
+                action, pi = forced_first_move
             move = divmod(action, board.size)
             records.append((step, canonical_array(board, player), player, pi.copy(), 0.0, "opponent"))
 
@@ -190,7 +353,15 @@ def play_training_game(
         else:
             value = 1.0 if record_player == winner else -1.0
         value = float(np.clip(value + config.reward_weight * reward, -1.0, 1.0))
-        examples.extend(augment_example(canonical, pi, value))
+        examples.extend(
+            augment_example(
+                canonical,
+                pi,
+                value,
+                translate_max_distance=config.translate_max_distance,
+                translate_min_edge_distance=config.translate_min_edge_distance,
+            )
+        )
     return examples, winner, step
 
 
@@ -359,6 +530,8 @@ def train_neural(
                 "value_loss": value_loss,
                 "opponent_checkpoint": str(config.opponent_checkpoint) if config.opponent_checkpoint else None,
                 "gomokuzero_checkpoint": str(config.gomokuzero_checkpoint) if config.gomokuzero_checkpoint else None,
+                "first_move_center_size": config.first_move_center_size,
+                "opponent_first_move_center_size": config.opponent_first_move_center_size,
             },
         )
         if visualizer:
@@ -376,6 +549,10 @@ def train_neural(
                 learn_after_step=config.learn_after_step if config.learn_after_step is not None else config.temp_threshold,
                 opponent_learn_after_step=config.learn_after_step if config.learn_after_step is not None else 0,
                 learn_opponent_wins=int(config.learn_opponent_wins),
+                translate_max_distance=-1 if config.translate_max_distance is None else config.translate_max_distance,
+                translate_min_edge_distance=config.translate_min_edge_distance,
+                first_move_center_size=config.first_move_center_size or 0,
+                opponent_first_move_center_size=config.opponent_first_move_center_size or 0,
             )
         print(
             f"iter {iteration}/{config.iterations} | examples {len(train_examples)} "

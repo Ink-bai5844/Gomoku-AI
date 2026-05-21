@@ -259,6 +259,33 @@ opponent 回合：只有 opponent 最终赢了才保存，用来学对面为什�
 --no-learn-opponent-wins
 ```
 
+如果想限制 learner 执黑先手时的第一颗落子范围，可以使用：
+
+```powershell
+--first-move-center-size 3
+```
+
+如果想限制对手执黑先手时的第一颗落子范围，并让它在中心区域内随机落子，可以使用：
+
+```powershell
+--opponent-first-move-center-size 3
+```
+
+这两个限制都只作用于 opponent-play，self-play 不受影响。`n` 必须是奇数，例如：
+
+```text
+1：只能下正中心
+3：只能下中心 3x3
+5：只能下中心 5x5
+0：关闭限制，默认值
+```
+
+示例：
+
+```powershell
+python train.py --size 15 --gomokuzero-opponent GomokuZeroAI/result_15x15/checkpoints/iter_0150_15x15.pt --opponent-games 10 --mcts-sims 80 --first-move-center-size 3 --opponent-first-move-center-size 3
+```
+
 对抗日志会显示 student 是否赢：
 
 ```text
@@ -344,6 +371,10 @@ runs/games/iter_0001/vs_GomokuZeroAI_game_001_final.png
 --reward-weight         棋形奖励塑形权重
 --learn-after-step      只学习该步数之后的训练样本，默认等于 temp-threshold
 --learn-opponent-wins   对抗失败时额外学习对手赢局中的落子，默认开启
+--translate-max-distance       平移增强最大平移距离，默认 2，-1 表示无限制
+--translate-min-edge-distance  平移增强后包围框离棋盘边界的最小距离，默认 2
+--first-move-center-size       对抗训练中 learner 先手第一子限制在中心 n*n，n 为奇数，0 关闭
+--opponent-first-move-center-size  对抗训练中 opponent 先手第一子在中心 n*n 内随机落子，n 为奇数，0 关闭
 --fresh                 从头训练
 --model                 模型保存/加载路径
 --device                cuda 或 cpu
@@ -399,6 +430,29 @@ channel 2：空位
 ```
 
 棋盘和 `pi` 会同步变换，落点概率不会错位。
+
+对于非平局样本，也就是 `value != 0` 的正负样本，还会做平移增强：
+
+```text
+1. 找出原始棋局中所有已有棋子的最小包围矩形
+2. 将这个局面整体平移到棋盘内合法位置
+3. 对每个平移后的局面再做旋转和镜像增强
+```
+
+平移时会同步移动 `board` 和 MCTS 策略分布 `pi`。如果某个平移会导致 `pi` 的非零概率落到棋盘外，该平移会被跳过，避免策略标签被裁坏。
+
+为了避免模型过度偏向边角，平移增强默认有限制：
+
+```text
+--translate-max-distance 2       相对原局面最多上下/左右平移 2 格
+--translate-min-edge-distance 2  平移后包围框至少离棋盘边缘 2 格
+```
+
+如果想关闭距离限制、恢复全棋盘平移：
+
+```powershell
+--translate-max-distance -1 --translate-min-edge-distance 0
+```
 
 ## 人机对弈
 

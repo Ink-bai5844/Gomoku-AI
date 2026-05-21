@@ -30,7 +30,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--opponent-games", type=int, default=0, help="games per iteration against frozen opponent checkpoints")
     parser.add_argument("--epochs", type=int, default=2, help="training epochs per iteration")
     parser.add_argument("--batch-size", type=int, default=64)
-    parser.add_argument("--replay-size", type=int, default=20000)
+    parser.add_argument("--replay-size", type=int, default=200000)
     parser.add_argument("--mcts-sims", type=int, default=80)
     parser.add_argument("--opponent-mcts-sims", type=int, default=80)
     parser.add_argument("--cpuct", type=float, default=1.5)
@@ -46,6 +46,30 @@ def parse_args() -> argparse.Namespace:
         action=argparse.BooleanOptionalAction,
         default=True,
         help="in opponent-play, also learn the opponent's moves from games the learner lost",
+    )
+    parser.add_argument(
+        "--translate-max-distance",
+        type=int,
+        default=2,
+        help="max row/col shift for translation augmentation; use -1 for unlimited",
+    )
+    parser.add_argument(
+        "--translate-min-edge-distance",
+        type=int,
+        default=2,
+        help="minimum distance between translated occupied bounding box and board edge",
+    )
+    parser.add_argument(
+        "--first-move-center-size",
+        type=int,
+        default=0,
+        help="opponent-play only: when learner plays first, restrict its first move to center n*n; n must be odd, 0 disables",
+    )
+    parser.add_argument(
+        "--opponent-first-move-center-size",
+        type=int,
+        default=0,
+        help="opponent-play only: when opponent plays first, randomly force its first move inside center n*n; n must be odd, 0 disables",
     )
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--weight-decay", type=float, default=1e-4)
@@ -182,6 +206,12 @@ def run_neural(args: argparse.Namespace) -> None:
         reward_weight=args.reward_weight,
         learn_after_step=args.learn_after_step,
         learn_opponent_wins=args.learn_opponent_wins,
+        translate_max_distance=None if args.translate_max_distance < 0 else args.translate_max_distance,
+        translate_min_edge_distance=args.translate_min_edge_distance,
+        first_move_center_size=None if args.first_move_center_size <= 0 else args.first_move_center_size,
+        opponent_first_move_center_size=None
+        if args.opponent_first_move_center_size <= 0
+        else args.opponent_first_move_center_size,
         seed=args.seed,
         model_path=args.model,
         opponent_checkpoint=args.alphazero_opponent,
