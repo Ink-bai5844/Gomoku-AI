@@ -203,15 +203,44 @@ class NeuralPolicy:
             policy = torch.softmax(logits, dim=1).cpu().numpy()[0]
         return policy, float(value.cpu().numpy()[0])
 
-    def choose_move(self, board: Board, player: int = BLACK) -> tuple[tuple[int, int], list[float]]:
+    def choose_move(
+        self,
+        board: Board,
+        player: int = BLACK,
+        *,
+        temperature: float = 0.0,
+        rng: np.random.Generator | None = None,
+    ) -> tuple[tuple[int, int], list[float]]:
         policy, _ = self.predict(board, player)
         legal = np.zeros(board.size * board.size, dtype=np.float32)
         for row, col in board.legal_moves():
             legal[row * board.size + col] = 1.0
         masked = policy * legal
-        if masked.sum() <= 0:
-            masked = legal
-        action = int(np.argmax(masked))
+        legal_actions = np.flatnonzero(legal)
+        if len(legal_actions) == 0:
+            raise RuntimeError("no legal moves available")
+
+        legal_probs = masked[legal_actions].astype(np.float64)
+        if float(legal_probs.sum()) <= 0.0 or not np.isfinite(legal_probs).all():
+            legal_probs = np.ones(len(legal_actions), dtype=np.float64)
+
+        if temperature <= 0:
+            action = int(legal_actions[int(np.argmax(legal_probs))])
+            return (action // board.size, action % board.size), []
+
+        adjusted = np.zeros_like(legal_probs, dtype=np.float64)
+        positive = legal_probs > 0.0
+        scaled = np.log(legal_probs[positive]) / max(float(temperature), 1e-6)
+        scaled -= float(np.max(scaled))
+        adjusted[positive] = np.exp(scaled)
+        total = float(adjusted.sum())
+        if total <= 0.0 or not np.isfinite(total):
+            adjusted = np.ones(len(legal_actions), dtype=np.float64)
+            total = float(adjusted.sum())
+
+        probs = adjusted / total
+        choice = rng.choice if rng is not None else np.random.choice
+        action = int(choice(legal_actions, p=probs))
         return (action // board.size, action % board.size), []
 
 

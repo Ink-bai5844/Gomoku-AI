@@ -23,7 +23,12 @@ def find_neural_model_paths() -> list[Path]:
 
 
 class GomokuApp(tk.Tk):
-    def __init__(self, preferred_model_path: str | Path | None = None) -> None:
+    def __init__(
+        self,
+        preferred_model_path: str | Path | None = None,
+        *,
+        temperature: float = 0.25,
+    ) -> None:
         super().__init__()
         self.title("Gomoku AI - Self Play RL")
         self.resizable(False, False)
@@ -35,6 +40,7 @@ class GomokuApp(tk.Tk):
         self.board = Board(size=BOARD_SIZE, n_in_row=N_IN_ROW)
         self.model_path: Path | None = None
         self.policy = self._load_default_policy(preferred_model_path)
+        self.temperature = temperature
         self.human_color = BLACK
         self.current_player = BLACK
         self.game_over = False
@@ -235,13 +241,17 @@ class GomokuApp(tk.Tk):
             return
         try:
             if isinstance(self.policy, NeuralPolicy):
-                move, _ = self.policy.choose_move(self.board, self.current_player)
+                move, _ = self.policy.choose_move(
+                    self.board,
+                    self.current_player,
+                    temperature=self.temperature,
+                )
             else:
                 move, _ = self.policy.choose_move(
                     self.board,
                     self.current_player,
                     epsilon=0.0,
-                    temperature=0.0,
+                    temperature=self.temperature,
                     candidate_radius=2,
                 )
         except RuntimeError:
@@ -272,6 +282,6 @@ class GomokuApp(tk.Tk):
             self.status_var.set(f"轮到 AI，当前 {side}")
 
 
-def main(preferred_model_path: str | Path | None = None) -> None:
-    app = GomokuApp(preferred_model_path)
+def main(preferred_model_path: str | Path | None = None, *, temperature: float = 0.25) -> None:
+    app = GomokuApp(preferred_model_path, temperature=temperature)
     app.mainloop()
